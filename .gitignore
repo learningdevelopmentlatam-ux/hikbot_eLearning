@@ -1,0 +1,7 @@
+.env
+*.log
+*.db
+__pycache__/
+.venv/
+test_login.py
+claude
