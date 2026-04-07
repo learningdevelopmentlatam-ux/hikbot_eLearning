@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 test_login.py
 claude
+test_tabla.py 
+test_reject.py
