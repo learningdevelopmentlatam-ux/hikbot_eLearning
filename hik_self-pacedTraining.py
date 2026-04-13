@@ -189,10 +189,21 @@ def click_approve(driver):
 
 def click_reject(driver):
     try:
+        # Esperar que no haya popups abiertos
+        try:
+            WebDriverWait(driver, 3).until(
+                EC.invisibility_of_element_located(
+                    (By.CSS_SELECTOR, ".el-dialog__wrapper")
+                )
+            )
+        except TimeoutException:
+            pass
+
+        # Click en botón Reject usando JavaScript para evitar intercepción
         btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Reject']"))
         )
-        btn.click()
+        driver.execute_script("arguments[0].click();", btn)
         log.info("  Click Reject")
         time.sleep(2)
 
