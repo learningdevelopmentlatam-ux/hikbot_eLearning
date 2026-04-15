@@ -1,3 +1,22 @@
+"""
+=============================================================================
+HIK_CERTIFICATE — Bot para sección Certificate
+=============================================================================
+
+Flujo:
+  1. Navegar a Certificate tab
+  2. Por cada usuario:
+     - nombre == empresa → RECHAZAR
+     - Groq dice NO es persona → RECHAZAR  
+     - Si pasa ambos filtros → APROBAR
+  3. Marcar APROBAR → Approve → confirmar popups
+  4. Marcar RECHAZAR → Reject → Other + mensaje → Confirm
+  5. Repetir hasta tabla vacía
+  6. Guardar en DB
+
+=============================================================================
+"""
+
 import time
 import logging
 from datetime import datetime
@@ -9,6 +28,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
 from hik_login import HikLogin
+from hik_names import HikNames
 from hik_db import HikDB
 
 logging.basicConfig(
@@ -17,97 +37,73 @@ logging.basicConfig(
 )
 log = logging.getLogger("HikBot")
 
-URL_PENDING = "https://elearning-admin.hikvision.com/todoList/pending?openTab=SelfPacedTraining"
+URL_CERTIFICATE = "https://elearning-admin.hikvision.com/todoList/pending?openTab=Certificate"
+
 MENSAJE_REJECT = (
-    "Esta certificación no esta disponible en tu pais, revisa el calendario "
-    "para asistir a las certificaciones disponibles en tu zona "
-    "https://www.hikvision.com/es-la/support/tools/capacitaciones-y-certificaciones-hikvision/"
+    "No se emite certificación a nombre de empresa, por favor coloque "
+    "su nombre y vuelva a solicitar el certificado"
 )
-db = HikDB()
+
+db     = HikDB()
+names  = HikNames()
 
 
 # ── Navegación ────────────────────────────────────────────────────────────────
 
-def ir_a_self_paced(driver):
-    driver.get(URL_PENDING)
+def ir_a_certificate(driver):
+    driver.get(URL_CERTIFICATE)
     try:
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
         )
+        log.info("  Tabla Certificate cargada")
     except TimeoutException:
         log.warning("  Tabla no apareció en 15s")
     time.sleep(2)
-    try:
-        tab = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//*[contains(text(),'Self-paced') or contains(text(),'Self-Paced')]")
-            )
-        )
-        tab.click()
-        time.sleep(3)
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
-        )
-        log.info("  Tab Self-paced activado")
-    except TimeoutException:
-        log.info("  Tab ya activo")
-        
+
+
 # ── Índices de columnas ───────────────────────────────────────────────────────
 
 def encontrar_indices(driver):
-    try:
-        contenedor = driver.find_element(By.CSS_SELECTOR, ".el-table__header-wrapper")
-        driver.execute_script("arguments[0].scrollLeft = 9999", contenedor)
-        time.sleep(1.5)
-    except Exception:
-        try:
-            driver.execute_script("document.querySelector('.el-table__body-wrapper').scrollLeft = 9999")
-            time.sleep(1.5)
-        except Exception:
-            pass
-
     encabezados = driver.find_elements(By.CSS_SELECTOR, "table thead th")
-    log.info(f"  Total encabezados: {len(encabezados)}")
-    for i, th in enumerate(encabezados):
-        log.info(f"  [{i}]: '{th.text.strip()}'")
+    idx_name    = None
+    idx_company = None
+    idx_cert    = None
 
-    idx_lang = None
-    idx_cert = None
     for i, th in enumerate(encabezados):
         texto = th.text.strip().lower()
-        if texto == "language":
-            idx_lang = i
+        if texto == "name":
+            idx_name = i
+        if texto == "company":
+            idx_company = i
         if texto == "certification":
             idx_cert = i
-    log.info(f"  Columnas → Language: {idx_lang} | Certification: {idx_cert}")
-    return idx_lang, idx_cert
+
+    log.info(f"  Columnas → Name: {idx_name} | Company: {idx_company} | Certification: {idx_cert}")
+    return idx_name, idx_company, idx_cert
+
 
 # ── Clasificar filas ──────────────────────────────────────────────────────────
 
-def clasificar_filas(driver, idx_lang, idx_cert):
-    filas = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+def clasificar_filas(driver, idx_name, idx_company, idx_cert):
+    filas  = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
     aprobar  = []
     rechazar = []
 
     for i, fila in enumerate(filas):
         try:
             celdas = fila.find_elements(By.TAG_NAME, "td")
-            if len(celdas) <= max(idx_lang, idx_cert):
+            if len(celdas) <= max(idx_name, idx_company, idx_cert):
                 continue
 
-            nombre  = celdas[1].text.strip()
-            email   = celdas[2].text.strip()
-            pais    = celdas[3].text.strip()
-            empresa = celdas[5].text.strip()
-            idioma  = celdas[idx_lang].text.strip()
+            nombre  = celdas[idx_name].text.strip()
+            email   = celdas[2].text.strip() if len(celdas) > 2 else ""
+            pais    = celdas[3].text.strip() if len(celdas) > 3 else ""
+            empresa = celdas[idx_company].text.strip()
             cert    = celdas[idx_cert].text.strip()
 
-            if not nombre and not idioma:
+            if not nombre:
                 continue
-
-            es_english = idioma.startswith("(English)")
-            es_thermal = "HCSA-Thermal" in cert
-            es_display = "HCSA-Display" in cert
 
             usuario = {
                 "nombre":        nombre,
@@ -115,14 +111,20 @@ def clasificar_filas(driver, idx_lang, idx_cert):
                 "pais":          pais,
                 "empresa":       empresa,
                 "certificacion": cert,
-                "idioma":        idioma,
+                "idioma":        "",
                 "fila":          fila,
             }
 
-            if es_english or es_thermal or es_display:
-                aprobar.append(usuario)
-            else:
+            # Solo rechazar si nombre == empresa
+            # La validación de Groq es opcional — solo como log informativo
+            es_persona = names.es_persona(nombre, empresa)
+
+            if nombre.lower() == empresa.lower():
                 rechazar.append(usuario)
+            else:
+                aprobar.append(usuario)
+                if not es_persona:
+                    log.warning(f"  [Names] Nombre sospechoso pero aprobado: '{nombre}' — revisar manualmente")
 
         except Exception as e:
             log.warning(f"  Error leyendo fila {i}: {e}")
@@ -176,7 +178,6 @@ def click_approve(driver):
         log.info("  Click Approve")
         time.sleep(2)
 
-        # Manejar hasta 2 popups de confirmación
         for _ in range(2):
             try:
                 WebDriverWait(driver, 5).until(
@@ -194,7 +195,6 @@ def click_approve(driver):
             except TimeoutException:
                 break
 
-        # Esperar recarga de tabla
         time.sleep(3)
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
@@ -211,7 +211,6 @@ def click_approve(driver):
 
 def click_reject(driver):
     try:
-        # Esperar que no haya popups abiertos
         try:
             WebDriverWait(driver, 3).until(
                 EC.invisibility_of_element_located(
@@ -221,7 +220,6 @@ def click_reject(driver):
         except TimeoutException:
             pass
 
-        # Click en botón Reject usando JavaScript para evitar intercepción
         btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Reject']"))
         )
@@ -229,7 +227,6 @@ def click_reject(driver):
         log.info("  Click Reject")
         time.sleep(2)
 
-        # Seleccionar "Other"
         other = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable(
                 (By.XPATH, "//label[contains(.,'Other')] | //span[normalize-space()='Other']/..")
@@ -239,7 +236,6 @@ def click_reject(driver):
         log.info("  'Other' seleccionado")
         time.sleep(1)
 
-        # Escribir mensaje
         campo = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located(
                 (By.XPATH, "//textarea[@placeholder='Please input']")
@@ -250,7 +246,6 @@ def click_reject(driver):
         log.info("  Mensaje escrito")
         time.sleep(0.5)
 
-        # Confirm
         confirm = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable(
                 (By.XPATH, "//button[normalize-space()='Confirm']")
@@ -259,7 +254,6 @@ def click_reject(driver):
         driver.execute_script("arguments[0].click();", confirm)
         log.info("  Reject confirmado")
 
-        # Esperar recarga de tabla
         time.sleep(3)
         try:
             WebDriverWait(driver, 10).until(
@@ -278,28 +272,25 @@ def click_reject(driver):
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 
 def procesar(driver, ejec_id):
-    idx_lang, idx_cert = encontrar_indices(driver)
-    total_aprobados = 0
+    idx_name, idx_company, idx_cert = encontrar_indices(driver)
+    total_aprobados  = 0
     total_rechazados = 0
-    total_errores = 0
+    total_errores    = 0
 
     while True:
         time.sleep(2)
-        aprobar, rechazar = clasificar_filas(driver, idx_lang, idx_cert)
+        aprobar, rechazar = clasificar_filas(driver, idx_name, idx_company, idx_cert)
 
-        # Si no hay nada → tabla vacía → terminar
         if not aprobar and not rechazar:
             log.info("  Tabla vacía — fin del proceso")
             break
 
-        # RONDA APROBAR
         if aprobar:
             log.info(f"\n  --- APROBANDO {len(aprobar)} ---")
             for u in aprobar:
-                log.info(f"  → {u['nombre']} | {u['certificacion']} | {u['idioma'][:40]}")
+                log.info(f"  → {u['nombre']} | {u['empresa']} | {u['certificacion']}")
 
             marcados = marcar_checkboxes(driver, aprobar)
-
             if marcados:
                 ok = click_approve(driver)
                 if ok:
@@ -314,16 +305,14 @@ def procesar(driver, ejec_id):
                             "motivo_error": "Falló Approve"
                         })
                         total_errores += 1
-            continue  # volver a leer la tabla antes de rechazar
+            continue
 
-        # RONDA RECHAZAR — solo cuando no hay más para aprobar
         if rechazar:
             log.info(f"\n  --- RECHAZANDO {len(rechazar)} ---")
             for u in rechazar:
-                log.info(f"  ✗ {u['nombre']} | {u['certificacion']} | {u['idioma'][:40]}")
+                log.info(f"  ✗ {u['nombre']} | {u['empresa']} | {u['certificacion']}")
 
             marcados = marcar_checkboxes(driver, rechazar)
-
             if marcados:
                 ok = click_reject(driver)
                 if ok:
@@ -351,14 +340,14 @@ driver = webdriver.Chrome(
     service=Service(ChromeDriverManager().install()), options=opts
 )
 
-inicio   = datetime.now()
-ejec_id  = db.iniciar_ejecucion()
+inicio  = datetime.now()
+ejec_id = db.iniciar_ejecucion()
 log.info(f"Ejecución ID: {ejec_id}")
 
 try:
     HikLogin(driver).ejecutar()
     time.sleep(3)
-    ir_a_self_paced(driver)
+    ir_a_certificate(driver)
     time.sleep(2)
 
     aprobados, rechazados, errores = procesar(driver, ejec_id)
@@ -372,8 +361,6 @@ try:
     log.info(f"  Errores    : {errores}")
     log.info(f"  Duración   : {duracion}s")
     log.info(f"{'='*50}")
-
-    input("\nBot terminado — revisa navegador y DB. Enter para cerrar...")
 
 finally:
     driver.quit()
