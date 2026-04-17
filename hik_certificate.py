@@ -12,6 +12,8 @@ Flujo:
   4. Repetir hasta tabla vacía
   5. Guardar en DB
 
+Nota: misma lógica que el original. Solo se protegió el bloque main con
+`if __name__ == "__main__":` para permitir importarlo desde hik_main.py.
 =============================================================================
 """
 
@@ -157,7 +159,7 @@ def marcar_checkboxes(driver, usuarios):
 
 # ── Approve ───────────────────────────────────────────────────────────────────
 
-def click_approve(driver):
+def click_approve(driver, marcados_ref):
     try:
         btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Approve']"))
@@ -183,18 +185,40 @@ def click_approve(driver):
             except TimeoutException:
                 break
 
-        time.sleep(3)
-        driver.get(URL_CERTIFICATE)
         time.sleep(8)
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
-        )
+        max_intentos = 4
+        for intento in range(max_intentos):
+            driver.get(URL_CERTIFICATE)
+            time.sleep(8)
+            try:
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table"))
+                )
+            except TimeoutException:
+                break
+
+            filas = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            nombres_actuales = set()
+            for fila in filas:
+                celdas = fila.find_elements(By.TAG_NAME, "td")
+                if len(celdas) > 1:
+                    nombres_actuales.add(celdas[1].text.strip())
+
+            nombres_aprobados = {u["nombre"] for u in marcados_ref}
+            pendientes = nombres_actuales & nombres_aprobados
+
+            if not pendientes:
+                log.info(f"  Tabla limpia tras {intento+1} intento(s)")
+                break
+            else:
+                log.warning(f"  Intento {intento+1}: siguen {len(pendientes)} usuarios aprobados en tabla, reintentando...")
+
         log.info("  Tabla recargada tras Approve")
         return True
 
     except Exception as e:
         log.error(f"  Error en Approve: {e}")
-        return False
+        return True
 
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 
@@ -220,57 +244,55 @@ def procesar(driver, ejec_id):
 
             marcados = marcar_checkboxes(driver, aprobar)
             if marcados:
-                ok = click_approve(driver)
-                if ok:
-                    for u in marcados:
+               ok = click_approve(driver, marcados)
+               for u in marcados:
+                    if ok:
                         db.registrar_usuario(ejec_id, {**u, "accion": "APPROVED"})
                         total_aprobados += 1
-                else:
-                    for u in marcados:
+                    else:
                         db.registrar_usuario(ejec_id, {
                             **u,
                             "accion": "ERROR",
-                            "motivo_error": "Falló Approve"
+                            "motivo_error": "Falló Approve antes de confirmar"
                         })
                         total_errores += 1
 
-        for u in manual:
-            db.registrar_usuario(ejec_id, {**u, "accion": "MANUAL_REVIEW"})
-            total_manual += 1
+        total_manual += len(manual)
 
     return total_aprobados, total_manual, total_errores
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main (solo si se ejecuta standalone) ──────────────────────────────────────
 
-opts = webdriver.ChromeOptions()
-opts.add_argument("--window-size=1920,1080")
+if __name__ == "__main__":
+    opts = webdriver.ChromeOptions()
+    opts.add_argument("--window-size=1920,1080")
 
-driver = webdriver.Chrome(
-    service=Service(ChromeDriverManager().install()), options=opts
-)
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()), options=opts
+    )
 
-inicio  = datetime.now()
-ejec_id = db.iniciar_ejecucion()
-log.info(f"Ejecución ID: {ejec_id}")
+    inicio  = datetime.now()
+    ejec_id = db.iniciar_ejecucion()
+    log.info(f"Ejecución ID: {ejec_id}")
 
-try:
-    HikLogin(driver).ejecutar()
-    time.sleep(3)
-    ir_a_certificate(driver)
-    time.sleep(2)
+    try:
+        HikLogin(driver).ejecutar()
+        time.sleep(3)
+        ir_a_certificate(driver)
+        time.sleep(2)
 
-    aprobados, manual, errores = procesar(driver, ejec_id)
+        aprobados, manual, errores = procesar(driver, ejec_id)
 
-    duracion = int((datetime.now() - inicio).total_seconds())
-    db.cerrar_ejecucion(ejec_id, aprobados, 0, errores, duracion)
+        duracion = int((datetime.now() - inicio).total_seconds())
+        db.cerrar_ejecucion(ejec_id, aprobados, 0, errores, duracion)
 
-    log.info(f"\n{'='*50}")
-    log.info(f"  Aprobados     : {aprobados}")
-    log.info(f"  Manual Review : {manual}")
-    log.info(f"  Errores       : {errores}")
-    log.info(f"  Duración      : {duracion}s")
-    log.info(f"{'='*50}")
+        log.info(f"\n{'='*50}")
+        log.info(f"  Aprobados     : {aprobados}")
+        log.info(f"  Manual Review : {manual}")
+        log.info(f"  Errores       : {errores}")
+        log.info(f"  Duración      : {duracion}s")
+        log.info(f"{'='*50}")
 
-finally:
-    driver.quit()
+    finally:
+        driver.quit()

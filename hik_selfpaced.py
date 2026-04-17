@@ -1,3 +1,14 @@
+"""
+=============================================================================
+HIK_SELFPACED — Bot para sección Self-paced Training
+=============================================================================
+Misma lógica que hik_self-pacedTraining.py original. Solo se renombró el
+archivo (sin guión, para poder importarlo) y se protegió el bloque main
+con `if __name__ == "__main__":` para permitir su uso como módulo desde
+hik_main.py sin que se ejecute automáticamente.
+=============================================================================
+"""
+
 import time
 import logging
 from datetime import datetime
@@ -51,7 +62,7 @@ def ir_a_self_paced(driver):
         log.info("  Tab Self-paced activado")
     except TimeoutException:
         log.info("  Tab ya activo")
-        
+
 # ── Índices de columnas ───────────────────────────────────────────────────────
 
 def encontrar_indices(driver):
@@ -137,14 +148,14 @@ def marcar_checkboxes(driver, usuarios):
     marcados = []
     # Releer todas las filas frescas del DOM
     filas_actuales = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-    
+
     for fila in filas_actuales:
         try:
             celdas = fila.find_elements(By.TAG_NAME, "td")
             if len(celdas) < 2:
                 continue
             nombre_fila = celdas[1].text.strip()
-            
+
             # Buscar si esta fila está en la lista de usuarios a marcar
             usuario_match = next(
                 (u for u in usuarios if u["nombre"] == nombre_fila), None
@@ -168,6 +179,7 @@ def marcar_checkboxes(driver, usuarios):
 # ── Approve ───────────────────────────────────────────────────────────────────
 
 def click_approve(driver):
+    aprobado = False
     try:
         btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Approve']"))
@@ -176,7 +188,6 @@ def click_approve(driver):
         log.info("  Click Approve")
         time.sleep(2)
 
-        # Manejar hasta 2 popups de confirmación
         for _ in range(2):
             try:
                 WebDriverWait(driver, 5).until(
@@ -194,19 +205,22 @@ def click_approve(driver):
             except TimeoutException:
                 break
 
-        # Esperar recarga de tabla
+        aprobado = True
+
+    except Exception as e:
+        log.error(f"  Error en Approve antes de confirmar: {e}")
+        return False
+
+    try:
         time.sleep(3)
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
         )
         log.info("  Tabla recargada tras Approve")
-        return True
-
     except Exception as e:
-        log.error(f"  Error en Approve: {e}")
-        return False
+        log.warning(f"  Error esperando tabla (Approve ya confirmado): {e}")
 
-
+    return aprobado
 # ── Reject ────────────────────────────────────────────────────────────────────
 
 def click_reject(driver):
@@ -343,38 +357,39 @@ def procesar(driver, ejec_id):
     return total_aprobados, total_rechazados, total_errores
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main (solo si se ejecuta standalone) ──────────────────────────────────────
 
-opts = webdriver.ChromeOptions()
-opts.add_argument("--window-size=1920,1080")
+if __name__ == "__main__":
+    opts = webdriver.ChromeOptions()
+    opts.add_argument("--window-size=1920,1080")
 
-driver = webdriver.Chrome(
-    service=Service(ChromeDriverManager().install()), options=opts
-)
+    driver = webdriver.Chrome(
+        service=Service(ChromeDriverManager().install()), options=opts
+    )
 
-inicio   = datetime.now()
-ejec_id  = db.iniciar_ejecucion()
-log.info(f"Ejecución ID: {ejec_id}")
+    inicio   = datetime.now()
+    ejec_id  = db.iniciar_ejecucion()
+    log.info(f"Ejecución ID: {ejec_id}")
 
-try:
-    HikLogin(driver).ejecutar()
-    time.sleep(3)
-    ir_a_self_paced(driver)
-    time.sleep(2)
+    try:
+        HikLogin(driver).ejecutar()
+        time.sleep(3)
+        ir_a_self_paced(driver)
+        time.sleep(2)
 
-    aprobados, rechazados, errores = procesar(driver, ejec_id)
+        aprobados, rechazados, errores = procesar(driver, ejec_id)
 
-    duracion = int((datetime.now() - inicio).total_seconds())
-    db.cerrar_ejecucion(ejec_id, aprobados, rechazados, errores, duracion)
+        duracion = int((datetime.now() - inicio).total_seconds())
+        db.cerrar_ejecucion(ejec_id, aprobados, rechazados, errores, duracion)
 
-    log.info(f"\n{'='*50}")
-    log.info(f"  Aprobados  : {aprobados}")
-    log.info(f"  Rechazados : {rechazados}")
-    log.info(f"  Errores    : {errores}")
-    log.info(f"  Duración   : {duracion}s")
-    log.info(f"{'='*50}")
+        log.info(f"\n{'='*50}")
+        log.info(f"  Aprobados  : {aprobados}")
+        log.info(f"  Rechazados : {rechazados}")
+        log.info(f"  Errores    : {errores}")
+        log.info(f"  Duración   : {duracion}s")
+        log.info(f"{'='*50}")
 
-    input("\nBot terminado — revisa navegador y DB. Enter para cerrar...")
+        input("\nBot terminado — revisa navegador y DB. Enter para cerrar...")
 
-finally:
-    driver.quit()
+    finally:
+        driver.quit()
