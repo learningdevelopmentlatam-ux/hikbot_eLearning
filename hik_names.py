@@ -30,12 +30,12 @@ log = logging.getLogger("HikBot")
 
 
 class HikNames:
+
     """
     Valida si un nombre corresponde a una persona real.
-
     Uso:
         validator = HikNames()
-        es_persona = validator.es_persona("Edith Ramirez", "Accesschile")
+        es_persona = validator.es_persona("Edith Ramirez", "Accesschile")      
     """
 
     def __init__(self):
@@ -73,14 +73,14 @@ class HikNames:
             return resultado
 
         prompt = f"""You are validating names for a certification system.
-Determine if this is a real human person's name or a company/organization name.
+    Determine if this is a real human person's name or a company/organization name.
 
-Name: "{nombre}"
+    Name: "{nombre}"
 
-Rules:
-- Answer YES if it looks like a real human name (from any country or culture)
-- Answer NO if it looks like a company, brand, organization, or is clearly not a human name
-- Answer only YES or NO, nothing else"""
+    Rules:
+    - Answer YES if it looks like a real human name (from any country or culture)
+    - Answer NO if it looks like a company, brand, organization, or is clearly not a human name
+    - Answer only YES or NO, nothing else"""
 
         try:
             response = self.client.chat.completions.create(
@@ -99,7 +99,7 @@ Rules:
         except Exception as e:
             log.warning(f"  [Names] Error Groq para '{nombre}': {e} → aprobando por defecto")
             return True
-
+        
     def _validar_config(self):
         if not os.getenv("GROQ_API_KEY"):
             raise Exception("GROQ_API_KEY no está definido en .env")

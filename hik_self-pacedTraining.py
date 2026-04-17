@@ -253,7 +253,7 @@ def click_reject(driver):
         # Confirm
         confirm = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable(
-                (By.XPATH, "//button[normalize-space()='Confirm']")
+                (By.XPATH, "//div[contains(@class,'button--line')]//button[normalize-space()='Confirm']")
             )
         )
         driver.execute_script("arguments[0].click();", confirm)
@@ -326,6 +326,7 @@ def procesar(driver, ejec_id):
 
             if marcados:
                 ok = click_reject(driver)
+                log.info(f"  click_reject retornó: {ok}")
                 if ok:
                     for u in marcados:
                         db.registrar_usuario(ejec_id, {**u, "accion": "REJECTED"})
