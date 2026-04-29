@@ -110,7 +110,14 @@ def clasificar_filas(driver, idx_name, idx_company, idx_cert):
                 "fila":          fila,
             }
 
-            es_persona = names.es_persona(nombre, empresa)
+            if any(c.isdigit() for c in nombre):
+                es_persona = False
+                log.warning(f"  [Names] '{nombre}' contiene números — rechazado automáticamente")
+            elif any(c in nombre for c in ['.', ',']):
+                es_persona = False
+                log.warning(f"  [Names] '{nombre}' contiene puntos o comas — rechazado automáticamente")
+            else:
+                es_persona = names.es_persona(nombre, empresa)
 
             if es_persona:
                 aprobar.append(usuario)
@@ -159,8 +166,22 @@ def marcar_checkboxes(driver, usuarios):
 
 # ── Approve ───────────────────────────────────────────────────────────────────
 
-def click_approve(driver, marcados_ref):
+def click_approve(driver, marcados_ref, idx_cert):
     try:
+        # Cerrar cualquier popup abierto antes de intentar Approve
+        try:
+            popup = driver.find_element(By.CSS_SELECTOR, ".el-message-box__wrapper")
+            if popup.is_displayed():
+                confirm = driver.find_element(
+                    By.XPATH,
+                    "//div[contains(@class,'el-message-box__wrapper')]//button[normalize-space()='Confirm']"
+                )
+                driver.execute_script("arguments[0].click();", confirm)
+                log.info("  Popup previo cerrado antes de Approve")
+                time.sleep(1)
+        except Exception:
+            pass
+
         btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Approve']"))
         )
@@ -185,33 +206,45 @@ def click_approve(driver, marcados_ref):
             except TimeoutException:
                 break
 
-        time.sleep(8)
-        max_intentos = 4
-        for intento in range(max_intentos):
-            driver.get(URL_CERTIFICATE)
-            time.sleep(8)
+        aprobados_ref = {(u["nombre"], u["certificacion"]) for u in marcados_ref}
+        tiempo_limite = 120
+        intervalo = 10
+        transcurrido = 0
+        tabla_actualizada = False
+
+        log.info("  Esperando que el servidor procese el Approve...")
+
+        while transcurrido < tiempo_limite:
+            time.sleep(intervalo)
+            transcurrido += intervalo
+            driver.refresh()
             try:
                 WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "table"))
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
                 )
+                time.sleep(3)
             except TimeoutException:
-                break
+                log.warning(f"  Tabla no cargó en intento {transcurrido}s")
+                continue
 
             filas = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
-            nombres_actuales = set()
+            nombres_en_tabla = set()
             for fila in filas:
                 celdas = fila.find_elements(By.TAG_NAME, "td")
-                if len(celdas) > 1:
-                    nombres_actuales.add(celdas[1].text.strip())
+                if len(celdas) > idx_cert:
+                    nombres_en_tabla.add((celdas[1].text.strip(), celdas[idx_cert].text.strip()))
 
-            nombres_aprobados = {u["nombre"] for u in marcados_ref}
-            pendientes = nombres_actuales & nombres_aprobados
+            pendientes = aprobados_ref & nombres_en_tabla
+            log.info(f"  Tiempo: {transcurrido}s | Aprobados aún en tabla: {len(pendientes)}")
 
             if not pendientes:
-                log.info(f"  Tabla limpia tras {intento+1} intento(s)")
+                log.info(f"  Tabla actualizada tras {transcurrido}s")
+                tabla_actualizada = True
                 break
-            else:
-                log.warning(f"  Intento {intento+1}: siguen {len(pendientes)} usuarios aprobados en tabla, reintentando...")
+
+        if not tabla_actualizada:
+            log.warning("  Página no actualizó en 2 minutos — registrando aprobados y deteniendo")
+            return "TIMEOUT"
 
         log.info("  Tabla recargada tras Approve")
         return True
@@ -219,7 +252,7 @@ def click_approve(driver, marcados_ref):
     except Exception as e:
         log.error(f"  Error en Approve: {e}")
         return True
-
+    
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 
 def procesar(driver, ejec_id):
@@ -227,6 +260,8 @@ def procesar(driver, ejec_id):
     total_aprobados = 0
     total_manual    = 0
     total_errores   = 0
+
+    ya_registrados_manual = set()
 
     while True:
         names._cache = {}
@@ -244,9 +279,9 @@ def procesar(driver, ejec_id):
 
             marcados = marcar_checkboxes(driver, aprobar)
             if marcados:
-               ok = click_approve(driver, marcados)
-               for u in marcados:
-                    if ok:
+                ok = click_approve(driver, marcados, idx_cert)
+                for u in marcados:
+                    if ok == "TIMEOUT" or ok:
                         db.registrar_usuario(ejec_id, {**u, "accion": "APPROVED"})
                         total_aprobados += 1
                     else:
@@ -256,8 +291,16 @@ def procesar(driver, ejec_id):
                             "motivo_error": "Falló Approve antes de confirmar"
                         })
                         total_errores += 1
+                if ok == "TIMEOUT":
+                    log.warning("  Deteniendo ejecución por timeout de página")
+                    break
 
-        total_manual += len(manual)
+        for u in manual:
+            clave = (u["nombre"], u["certificacion"])
+            if clave not in ya_registrados_manual:
+                db.registrar_usuario(ejec_id, {**u, "accion": "MANUAL_REVIEW"})
+                ya_registrados_manual.add(clave)
+                total_manual += 1
 
     return total_aprobados, total_manual, total_errores
 

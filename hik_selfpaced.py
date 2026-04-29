@@ -29,9 +29,20 @@ logging.basicConfig(
 log = logging.getLogger("HikBot")
 
 URL_PENDING = "https://elearning-admin.hikvision.com/todoList/pending?openTab=SelfPacedTraining"
-MENSAJE_REJECT = (
-    "Esta certificación no esta disponible en tu pais, revisa el calendario "
-    "para asistir a las certificaciones disponibles en tu zona "
+# MENSAJE_REJECT = (
+#     "Esta certificación no esta disponible en tu pais, revisa el calendario "
+#     "para asistir a las certificaciones disponibles en tu zona "
+#     "https://www.hikvision.com/es-la/support/tools/capacitaciones-y-certificaciones-hikvision/"
+# )
+
+MENSAJE_MAINTENANCE = (
+    "Queremos informarle que esta certificación está dirigida exclusivamente a centros de RMA autorizados de Hikvision. "
+    "Si desea más información comuníquese con lina.daza@hikvision.com"
+)
+
+MENSAJE_HCSP = (
+    "Esta Certificación se debe tomar de manera presencial con un instructor certificado y con equipos específicos. "
+    "Consulta en tu región las próximas fechas y certifícate con nosotros. "
     "https://www.hikvision.com/es-la/support/tools/capacitaciones-y-certificaciones-hikvision/"
 )
 db = HikDB()
@@ -93,12 +104,11 @@ def encontrar_indices(driver):
     log.info(f"  Columnas → Language: {idx_lang} | Certification: {idx_cert}")
     return idx_lang, idx_cert
 
-# ── Clasificar filas ──────────────────────────────────────────────────────────
-
 def clasificar_filas(driver, idx_lang, idx_cert):
-    filas = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+    filas   = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
     aprobar  = []
     rechazar = []
+    manual   = []
 
     for i, fila in enumerate(filas):
         try:
@@ -116,9 +126,10 @@ def clasificar_filas(driver, idx_lang, idx_cert):
             if not nombre and not idioma:
                 continue
 
-            es_english = idioma.startswith("(English)")
-            es_thermal = "HCSA-Thermal" in cert
-            es_display = "HCSA-Display" in cert
+            es_thermal     = "HCSA-Thermal" in cert
+            es_display     = "HCSA-Display" in cert
+            es_maintenance = "HCSA-Maintenance" in cert or "HCSA Maintenance" in cert
+            es_hcsp        = "HCSP" in cert
 
             usuario = {
                 "nombre":        nombre,
@@ -130,17 +141,20 @@ def clasificar_filas(driver, idx_lang, idx_cert):
                 "fila":          fila,
             }
 
-            if es_english or es_thermal or es_display:
+            if es_thermal or es_display:
                 aprobar.append(usuario)
+            elif es_maintenance:
+                rechazar.append({**usuario, "mensaje_reject": MENSAJE_MAINTENANCE})
+            elif es_hcsp:
+                rechazar.append({**usuario, "mensaje_reject": MENSAJE_HCSP})
             else:
-                rechazar.append(usuario)
+                manual.append(usuario)
 
         except Exception as e:
             log.warning(f"  Error leyendo fila {i}: {e}")
 
-    log.info(f"  Clasificados → APROBAR: {len(aprobar)} | RECHAZAR: {len(rechazar)}")
-    return aprobar, rechazar
-
+    log.info(f"  Clasificados → APROBAR: {len(aprobar)} | RECHAZAR: {len(rechazar)} | MANUAL_REVIEW: {len(manual)}")
+    return aprobar, rechazar, manual
 
 # ── Marcar checkboxes ─────────────────────────────────────────────────────────
 
@@ -223,7 +237,7 @@ def click_approve(driver):
     return aprobado
 # ── Reject ────────────────────────────────────────────────────────────────────
 
-def click_reject(driver):
+def click_reject(driver, mensaje):
     try:
         # Esperar que no haya popups abiertos
         try:
@@ -260,7 +274,7 @@ def click_reject(driver):
             )
         )
         campo.clear()
-        campo.send_keys(MENSAJE_REJECT)
+        campo.send_keys(mensaje)
         log.info("  Mensaje escrito")
         time.sleep(0.5)
 
@@ -293,17 +307,28 @@ def click_reject(driver):
 
 def procesar(driver, ejec_id):
     idx_lang, idx_cert = encontrar_indices(driver)
-    total_aprobados = 0
+    total_aprobados  = 0
     total_rechazados = 0
-    total_errores = 0
+    total_errores    = 0
+    total_manual     = 0
+    ya_registrados_manual = set()  # ← FUERA del while
 
     while True:
         time.sleep(2)
-        aprobar, rechazar = clasificar_filas(driver, idx_lang, idx_cert)
+        aprobar, rechazar, manual = clasificar_filas(driver, idx_lang, idx_cert)
 
-        # Si no hay nada → tabla vacía → terminar
+        # Registrar manuales nuevos sin duplicar
+        for u in manual:
+            clave = (u["nombre"], u["certificacion"])
+            if clave not in ya_registrados_manual:
+                db.registrar_usuario(ejec_id, {**u, "accion": "MANUAL_REVIEW"})
+                ya_registrados_manual.add(clave)
+                total_manual += 1
+                log.info(f"  [MANUAL] {u['nombre']} | {u['certificacion']}")
+
+        # Si no hay nada para aprobar ni rechazar → terminar
         if not aprobar and not rechazar:
-            log.info("  Tabla vacía — fin del proceso")
+            log.info("  Sin pendientes — fin del proceso")
             break
 
         # RONDA APROBAR
@@ -328,25 +353,21 @@ def procesar(driver, ejec_id):
                             "motivo_error": "Falló Approve"
                         })
                         total_errores += 1
-            continue  # volver a leer la tabla antes de rechazar
+            continue
 
-        # RONDA RECHAZAR — solo cuando no hay más para aprobar
+        # RONDA RECHAZAR — uno por uno por mensaje distinto
         if rechazar:
             log.info(f"\n  --- RECHAZANDO {len(rechazar)} ---")
             for u in rechazar:
-                log.info(f"  ✗ {u['nombre']} | {u['certificacion']} | {u['idioma'][:40]}")
-
-            marcados = marcar_checkboxes(driver, rechazar)
-
-            if marcados:
-                ok = click_reject(driver)
-                log.info(f"  click_reject retornó: {ok}")
-                if ok:
-                    for u in marcados:
+                log.info(f"  ✗ {u['nombre']} | {u['certificacion']}")
+                marcados = marcar_checkboxes(driver, [u])
+                if marcados:
+                    ok = click_reject(driver, u["mensaje_reject"])
+                    log.info(f"  click_reject retornó: {ok}")
+                    if ok:
                         db.registrar_usuario(ejec_id, {**u, "accion": "REJECTED"})
                         total_rechazados += 1
-                else:
-                    for u in marcados:
+                    else:
                         db.registrar_usuario(ejec_id, {
                             **u,
                             "accion": "ERROR",
@@ -355,7 +376,6 @@ def procesar(driver, ejec_id):
                         total_errores += 1
 
     return total_aprobados, total_rechazados, total_errores
-
 
 # ── Main (solo si se ejecuta standalone) ──────────────────────────────────────
 
