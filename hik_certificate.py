@@ -204,6 +204,8 @@ def click_approve(driver, marcados_ref, idx_cert):
                 log.info("  Popup confirmado")
                 time.sleep(1)
             except TimeoutException:
+                log.info(f"  Tabla vacía tras {transcurrido}s — Approve completado")
+                tabla_actualizada = True
                 break
 
         aprobados_ref = {(u["nombre"], u["certificacion"]) for u in marcados_ref}

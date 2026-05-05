@@ -45,6 +45,38 @@ MENSAJE_HCSP = (
     "Consulta en tu región las próximas fechas y certifícate con nosotros. "
     "https://www.hikvision.com/es-la/support/tools/capacitaciones-y-certificaciones-hikvision/"
 )
+
+MENSAJE_SECURITY = (
+    "Te invitamos a participar en las nuevas certificaciones HCSA Security de forma presencial, "
+    "con material actualizado e integración de líneas como CCTV, Control de Acceso, Intercom y Alarmas. "
+    "Consulta en tu región las próximas fechas y certifícate con nosotros "
+    "https://www.hikvision.com/es-la/support/tools/capacitaciones-y-certificaciones-hikvision/"
+)
+
+MENSAJE_VMS = (
+    "Esta certificación no esta disponible en tu región, te invitamos a participar de la "
+    "certificación HCSA VMS de manera presencial y también ver la playlist de curso de operador VMS "
+    "https://elearning.hikvision.com/americas/topic/detail/112"
+)
+
+MENSAJE_VIRTUAL = (
+    "Esta certificación no esta disponible en tu país de manera virtual, revisa el calendario "
+    "para asistir a las certificaciones disponibles en tu zona "
+    "https://www.hikvision.com/es-la/support/tools/capacitaciones-y-certificaciones-hikvision/"
+)
+
+PAISES_CARIBE = {
+    "Anguilla", "Antigua and Barbuda", "Aruba", "Bahamas", "Barbados",
+    "Belize", "Bermuda", "Bonaire, Sint Eustatius and Saba", "Cayman Islands",
+    "Curacao", "Falkland Islands (Malvinas)", "French Guiana", "Grenada",
+    "Guadeloupe", "Guyana", "Haiti", "Isle of Man", "Montserrat",
+    "Puerto Rico", "Saint Barthélemy", "Saint Kitts and Nevis", "Saint Lucia",
+    "Saint Martin (French part)", "Saint Pierre and Miquelon",
+    "Saint Vincent and the Grenadines", "Suriname", "Trinidad AND Tobago",
+    "Turks and Caicos Islands", "Virgin Islands, British", "Virgin Islands, U.S.",
+}
+
+PAISES_VMS = PAISES_CARIBE | {"United States", "Canada", "Peru"}
 db = HikDB()
 
 
@@ -126,11 +158,6 @@ def clasificar_filas(driver, idx_lang, idx_cert):
             if not nombre and not idioma:
                 continue
 
-            es_thermal     = "HCSA-Thermal" in cert
-            es_display     = "HCSA-Display" in cert
-            es_maintenance = "HCSA-Maintenance" in cert or "HCSA Maintenance" in cert
-            es_hcsp        = "HCSP" in cert
-
             usuario = {
                 "nombre":        nombre,
                 "email":         email,
@@ -141,12 +168,47 @@ def clasificar_filas(driver, idx_lang, idx_cert):
                 "fila":          fila,
             }
 
+            # ── Clasificación por tipo de certificación ──────────────────
+            es_thermal     = "HCSA-Thermal" in cert
+            es_display     = "HCSA-Display" in cert
+            es_maintenance = "HCSA-Maintenance" in cert or "HCSA Maintenance" in cert
+            es_hcsp = cert.startswith("HCSP") or " HCSP" in cert or "HCSA-SaaS" in cert
+            es_security    = "HCSA-Security" in cert  # cubre Security, Security-Acceso y Alarma, etc.
+            es_vms         = "HCSA-VMS" in cert        # cubre HCSA-VMS, HCSA-VMS-HCL
+            es_cctv_group  = any(x in cert for x in [
+                "HCSA-CCTV",
+                "HCSA-Video Intercom",
+                "HCSA-Access Control",
+                "HCSA-Alarm",
+            ])
+
             if es_thermal or es_display:
                 aprobar.append(usuario)
+
             elif es_maintenance:
                 rechazar.append({**usuario, "mensaje_reject": MENSAJE_MAINTENANCE})
+
             elif es_hcsp:
                 rechazar.append({**usuario, "mensaje_reject": MENSAJE_HCSP})
+
+            elif es_security:
+                if pais == "Canada" and "English" in idioma:
+                    aprobar.append(usuario)
+                else:
+                    rechazar.append({**usuario, "mensaje_reject": MENSAJE_SECURITY})
+
+            elif es_vms:
+                if pais in PAISES_VMS:
+                    aprobar.append(usuario)
+                else:
+                    rechazar.append({**usuario, "mensaje_reject": MENSAJE_VMS})
+
+            elif es_cctv_group:
+                if "English" in idioma and pais in PAISES_CARIBE:
+                    aprobar.append(usuario)
+                else:
+                    rechazar.append({**usuario, "mensaje_reject": MENSAJE_VIRTUAL})
+
             else:
                 manual.append(usuario)
 
@@ -198,7 +260,7 @@ def click_approve(driver):
         btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Approve']"))
         )
-        btn.click()
+        driver.execute_script("arguments[0].click();", btn)
         log.info("  Click Approve")
         time.sleep(2)
 
@@ -239,6 +301,7 @@ def click_approve(driver):
 
 def click_reject(driver, mensaje):
     try:
+        time.sleep(2) 
         # Esperar que no haya popups abiertos
         try:
             WebDriverWait(driver, 3).until(
@@ -315,6 +378,15 @@ def procesar(driver, ejec_id):
 
     while True:
         time.sleep(2)
+        try:
+            confirm = driver.find_element(By.XPATH,
+                "//div[contains(@class,'el-message-box__wrapper')]//button[normalize-space()='Confirm']")
+            if confirm.is_displayed():
+                driver.execute_script("arguments[0].click();", confirm)
+                log.info("  Popup residual cerrado")
+                time.sleep(1)
+        except Exception:
+            pass
         aprobar, rechazar, manual = clasificar_filas(driver, idx_lang, idx_cert)
 
         # Registrar manuales nuevos sin duplicar
@@ -363,16 +435,16 @@ def procesar(driver, ejec_id):
                 marcados = marcar_checkboxes(driver, [u])
                 if marcados:
                     ok = click_reject(driver, u["mensaje_reject"])
+                    if not ok:
+                        log.warning(f"  Reintentando Reject para {u['nombre']}...")
+                        time.sleep(3)
+                        ok = click_reject(driver, u["mensaje_reject"])
                     log.info(f"  click_reject retornó: {ok}")
                     if ok:
                         db.registrar_usuario(ejec_id, {**u, "accion": "REJECTED"})
                         total_rechazados += 1
                     else:
-                        db.registrar_usuario(ejec_id, {
-                            **u,
-                            "accion": "ERROR",
-                            "motivo_error": "Falló Reject"
-                        })
+                        db.registrar_usuario(ejec_id, {**u, "accion": "ERROR", "motivo_error": "Falló Reject x2"})
                         total_errores += 1
 
     return total_aprobados, total_rechazados, total_errores
