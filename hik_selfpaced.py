@@ -222,8 +222,15 @@ def clasificar_filas(driver, idx_lang, idx_cert):
 
 def marcar_checkboxes(driver, usuarios):
     marcados = []
+    try:
+        contenedor = driver.find_element(By.CSS_SELECTOR, ".el-table__body-wrapper")
+        driver.execute_script("arguments[0].scrollLeft = 0", contenedor)
+        time.sleep(0.5)
+    except Exception:
+        pass
     # Releer todas las filas frescas del DOM
     filas_actuales = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+    log.info(f"  [DEBUG] Total filas encontradas en DOM: {len(filas_actuales)}")
 
     for fila in filas_actuales:
         try:
@@ -239,12 +246,22 @@ def marcar_checkboxes(driver, usuarios):
             if not usuario_match:
                 continue
 
-            checkbox = fila.find_element(By.CSS_SELECTOR, "input[type='checkbox']")
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", checkbox)
+            checkbox = fila.find_element(By.CSS_SELECTOR, "input[type='checkbox']")           
             time.sleep(0.2)
+
             if not checkbox.is_selected():
                 driver.execute_script("arguments[0].click();", checkbox)
-                time.sleep(0.2)
+                time.sleep(0.3)
+                # Verificar que realmente quedó marcado
+                if not checkbox.is_selected():
+                    # Reintentar una vez más
+                    driver.execute_script("arguments[0].click();", checkbox)
+                    time.sleep(0.3)
+                
+                if not checkbox.is_selected():
+                    log.warning(f"  ✗ Checkbox NO quedó marcado: {nombre_fila}")
+                    continue  # No agregar a marcados, skip esta fila
+
             marcados.append(usuario_match)
             log.info(f"  ✓ Marcado: {nombre_fila}")
         except Exception as e:
@@ -329,7 +346,27 @@ def click_reject(driver, mensaje):
         driver.execute_script("arguments[0].click();", other)
         log.info("  'Other' seleccionado")
         time.sleep(1)
+        # ── FIX: verificar que Other quedó seleccionado ──
+        try:
+            WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, "//textarea[@placeholder='Please input']")
+                )
+            )
+        except TimeoutException:
+            log.warning("  'Other' no se seleccionó, reintentando...")
+            driver.execute_script("arguments[0].click();", other)
+            time.sleep(1)
+        # ────────────────────────────────────────────────
 
+        # Escribir mensaje
+        campo = WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located(
+                (By.XPATH, "//textarea[@placeholder='Please input']")
+            )
+        )
+        campo.clear()
+        campo.send_keys(mensaje)
         # Escribir mensaje
         campo = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located(
@@ -430,22 +467,32 @@ def procesar(driver, ejec_id):
         # RONDA RECHAZAR — uno por uno por mensaje distinto
         if rechazar:
             log.info(f"\n  --- RECHAZANDO {len(rechazar)} ---")
+            rechazar_agrupado = {}
             for u in rechazar:
-                log.info(f"  ✗ {u['nombre']} | {u['certificacion']}")
-                marcados = marcar_checkboxes(driver, [u])
+                msg = u["mensaje_reject"]
+                if msg not in rechazar_agrupado:
+                    rechazar_agrupado[msg] = []
+                rechazar_agrupado[msg].append(u)
+
+            for mensaje, grupo in rechazar_agrupado.items():
+                for u in grupo:
+                    log.info(f"  ✗ {u['nombre']} | {u['certificacion']}")
+                marcados = marcar_checkboxes(driver, grupo)
                 if marcados:
-                    ok = click_reject(driver, u["mensaje_reject"])
+                    ok = click_reject(driver, mensaje)
                     if not ok:
-                        log.warning(f"  Reintentando Reject para {u['nombre']}...")
+                        log.warning(f"  Reintentando Reject...")
                         time.sleep(3)
-                        ok = click_reject(driver, u["mensaje_reject"])
+                        ok = click_reject(driver, mensaje)
                     log.info(f"  click_reject retornó: {ok}")
                     if ok:
-                        db.registrar_usuario(ejec_id, {**u, "accion": "REJECTED"})
-                        total_rechazados += 1
+                        for u in marcados:
+                            db.registrar_usuario(ejec_id, {**u, "accion": "REJECTED"})
+                            total_rechazados += 1
                     else:
-                        db.registrar_usuario(ejec_id, {**u, "accion": "ERROR", "motivo_error": "Falló Reject x2"})
-                        total_errores += 1
+                        for u in marcados:
+                            db.registrar_usuario(ejec_id, {**u, "accion": "ERROR", "motivo_error": "Falló Reject x2"})
+                            total_errores += 1
 
     return total_aprobados, total_rechazados, total_errores
 
