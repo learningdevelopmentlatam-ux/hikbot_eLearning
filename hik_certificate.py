@@ -222,10 +222,21 @@ def click_approve(driver, marcados_ref, idx_cert):
             driver.refresh()
             try:
                 WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
+                    lambda d: d.find_elements(By.CSS_SELECTOR, "table tbody tr") or
+                            d.find_elements(By.CSS_SELECTOR, "table tbody")
                 )
                 time.sleep(3)
             except TimeoutException:
+                # Verificar si la tabla existe pero está vacía
+                try:
+                    tbody = driver.find_element(By.CSS_SELECTOR, "table tbody")
+                    filas = tbody.find_elements(By.TAG_NAME, "tr")
+                    if len(filas) == 0:
+                        log.info(f"  Tabla vacía tras {transcurrido}s — Approve completado")
+                        tabla_actualizada = True
+                        break
+                except Exception:
+                    pass
                 log.warning(f"  Tabla no cargó en intento {transcurrido}s")
                 continue
 
