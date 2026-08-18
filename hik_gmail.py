@@ -138,7 +138,7 @@ class HikGmail:
     def _conectar(self) -> imaplib.IMAP4_SSL:
         """Abre y retorna conexión IMAP autenticada."""
         try:
-            mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+            mail = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT, timeout=30)
             mail.login(self.usuario, self.app_pass)
             return mail
         except imaplib.IMAP4.error as e:
@@ -188,7 +188,7 @@ class HikGmail:
                     msg.get_content_charset() or "utf-8", errors="replace"
                 )
         
-        log.info(f"  Gmail: cuerpo extraído → {repr(texto[:300])}")
+        log.info(f"  Gmail: cuerpo extraído → {len(texto)} caracteres")
         return texto
 
     def _timestamp_email(self, msg) -> float | None:

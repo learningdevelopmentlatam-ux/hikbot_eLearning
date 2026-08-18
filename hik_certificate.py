@@ -6,14 +6,11 @@ HIK_CERTIFICATE — Bot para sección Certificate
 Flujo:
   1. Navegar a Certificate tab
   2. Por cada usuario:
-     - Groq dice ES persona → APROBAR
-     - Groq dice NO es persona → MANUAL_REVIEW (se registra en BD, se omite)
+     - Validación local dice ES persona → APROBAR
+     - Validación local dice NO es persona → MANUAL_REVIEW (se registra en BD, se omite)
   3. Marcar APROBAR → Approve → confirmar popups
   4. Repetir hasta tabla vacía
   5. Guardar en DB
-
-Nota: misma lógica que el original. Solo se protegió el bloque main con
-`if __name__ == "__main__":` para permitir importarlo desde hik_main.py.
 =============================================================================
 """
 
@@ -110,14 +107,7 @@ def clasificar_filas(driver, idx_name, idx_company, idx_cert):
                 "fila":          fila,
             }
 
-            if any(c.isdigit() for c in nombre):
-                es_persona = False
-                log.warning(f"  [Names] '{nombre}' contiene números — rechazado automáticamente")
-            elif any(c in nombre for c in ['.', ',']):
-                es_persona = False
-                log.warning(f"  [Names] '{nombre}' contiene puntos o comas — rechazado automáticamente")
-            else:
-                es_persona = names.es_persona(nombre, empresa)
+            es_persona = names.es_persona(nombre, empresa)
 
             if es_persona:
                 aprobar.append(usuario)
@@ -277,7 +267,6 @@ def procesar(driver, ejec_id):
     ya_registrados_manual = set()
 
     while True:
-        names._cache = {}
         time.sleep(5)
         aprobar, manual = clasificar_filas(driver, idx_name, idx_company, idx_cert)
 
@@ -323,6 +312,7 @@ def procesar(driver, ejec_id):
 if __name__ == "__main__":
     opts = webdriver.ChromeOptions()
     opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--incognito")
 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()), options=opts

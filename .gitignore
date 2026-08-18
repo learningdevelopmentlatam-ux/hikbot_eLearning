@@ -9,3 +9,6 @@ test_tabla.py
 test_reject.py
 google_credentials.json
 hik_sheets.py
+hik_data.json
+hik_dashboard.html
+*.db-journal

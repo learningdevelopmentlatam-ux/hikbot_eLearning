@@ -501,6 +501,7 @@ def procesar(driver, ejec_id):
 if __name__ == "__main__":
     opts = webdriver.ChromeOptions()
     opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--incognito")
 
     driver = webdriver.Chrome(
         service=Service(ChromeDriverManager().install()), options=opts

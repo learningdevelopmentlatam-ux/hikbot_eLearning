@@ -1,32 +1,60 @@
 """
 =============================================================================
-HIK_NAMES — Validador de nombres con Groq AI
+HIK_NAMES — Validador de nombres (local, sin dependencias externas)
 =============================================================================
 
 Responsabilidad única:
   Determinar si un nombre es de una persona real o de una empresa/bot
-  usando Groq (gratuito, sin tarjeta)
+  usando filtros locales basados en keywords.
 
 Flujo:
-  1. Filtro rápido: nombre == empresa → False directo (sin gastar API)
-  2. Si pasa → pregunta a Groq: ¿es nombre de persona?
-  3. Retorna True (persona) o False (no persona)
-
-Requiere en .env:
-  GROQ_API_KEY → API key de console.groq.com
+  1. Filtros rápidos: vacío, nombre == empresa, prefijo "Ing.", dígitos, puntos/comas
+  2. Detección de keywords corporativos (español e inglés)
+  3. Si pasa todos los filtros → es persona (aprobar)
 
 =============================================================================
 """
 
-import os
-import time
+import re
 import logging
-from groq import Groq
-from dotenv import load_dotenv
-
-load_dotenv()
+import unicodedata
 
 log = logging.getLogger("HikBot")
+
+SUFIJOS_CORPORATIVOS = frozenset({
+    "sa", "sas", "srl", "ltda", "ltd", "llc", "corp", "inc",
+    "ca", "cia", "gmbh", "plc", "ag", "nv", "bv",
+    "corporation", "incorporated", "company",
+})
+
+KEYWORDS_CORPORATIVOS = frozenset({
+    # Inglés
+    "security", "systems", "system", "technology", "technologies",
+    "solutions", "services", "consulting", "consultants",
+    "group", "international", "global", "enterprise", "enterprises",
+    "industries", "industrial", "engineering", "electronics",
+    "communications", "networks", "networking", "integration", "integrations",
+    "distributor", "distribution", "distributors", "wholesale",
+    "construction", "trading", "import", "export",
+    "association", "foundation", "institute", "university",
+    "surveillance",
+    # Español
+    "seguridad", "sistemas", "tecnologia", "tecnologias",
+    "soluciones", "servicios", "consultoria", "consultores",
+    "grupo", "internacional", "comercial", "comercializadora",
+    "ingenieria", "electronica",
+    "comunicaciones", "redes", "integraciones", "integracion",
+    "distribuidora", "construccion", "constructora",
+    "instalaciones", "instaladora",
+    "importadora", "exportadora",
+    "asociacion", "fundacion", "instituto", "universidad",
+    "vigilancia", "videovigilancia",
+    "telecom", "telecomunicaciones", "telecomunicacion",
+    "alarma", "alarmas", "monitoreo", "automatizacion",
+    "corporativo", "empresa", "compania", "corporacion",
+    # Industria CCTV
+    "cctv", "hikvision", "dahua",
+})
 
 
 class HikNames:
@@ -35,19 +63,13 @@ class HikNames:
     Valida si un nombre corresponde a una persona real.
     Uso:
         validator = HikNames()
-        es_persona = validator.es_persona("Edith Ramirez", "Accesschile")      
+        es_persona = validator.es_persona("Edith Ramirez", "Accesschile")
     """
 
     def __init__(self):
-        self._validar_config()
-        self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        self._cache = {}
+        pass
 
     def es_persona(self, nombre: str, empresa: str) -> bool:
-        """
-        Retorna True si el nombre es de una persona real.
-        Retorna False si parece empresa, bot o nombre inválido.
-        """
         nombre  = nombre.strip()
         empresa = empresa.strip()
 
@@ -55,51 +77,45 @@ class HikNames:
             log.info("  [Names] Sin nombre → rechazar")
             return False
 
-        # Filtro 1 — nombre igual a empresa
         if nombre.lower() == empresa.lower():
-            log.info(f"  [Names] Nombre == Empresa '{nombre}' → rechazar")
+            log.info(f"  [Names] Nombre == Empresa '{nombre}' → manual review")
             return False
 
-        # Filtro 2 — Groq
-        return self._consultar_groq(nombre)
-
-    def _consultar_groq(self, nombre: str) -> bool:
-        """Consulta Groq si el nombre es de una persona real."""
         nombre_lower = nombre.lower()
 
-        if nombre_lower in self._cache:
-            resultado = self._cache[nombre_lower]
-            log.info(f"  [Names] Cache: '{nombre}' → {'persona' if resultado else 'no persona'}")
-            return resultado
+        if nombre_lower.startswith("ing.") or nombre_lower.startswith("ing "):
+            log.warning(f"  [Names] '{nombre}' empieza con 'Ing.' — manual review")
+            return False
 
-        prompt = f"""You are validating names for a certification system.
-    Determine if this is a real human person's name or a company/organization name.
+        if any(c.isdigit() for c in nombre):
+            log.warning(f"  [Names] '{nombre}' contiene números — manual review")
+            return False
 
-    Name: "{nombre}"
+        if any(c in nombre for c in ['.', ',']):
+            log.warning(f"  [Names] '{nombre}' contiene puntos o comas — manual review")
+            return False
 
-    Rules:
-    - Answer YES if it looks like a real human name (from any country or culture)
-    - Answer NO if it looks like a company, brand, organization, or is clearly not a human name
-    - Answer only YES or NO, nothing else"""
+        if self._es_nombre_corporativo(nombre):
+            log.warning(f"  [Names] '{nombre}' contiene keywords corporativos — manual review")
+            return False
 
-        try:
-            response = self.client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=5,
-                temperature=0,
-            )
-            answer    = response.choices[0].message.content.strip().upper()
-            resultado = answer.startswith("YES")
+        log.info(f"  [Names] '{nombre}' → persona ✓")
+        return True
 
-            self._cache[nombre_lower] = resultado
-            log.info(f"  [Names] Groq: '{nombre}' → {'persona ✓' if resultado else 'no persona ✗'} (respuesta: {answer})")
-            return resultado
+    def _es_nombre_corporativo(self, nombre: str) -> bool:
+        nombre_norm = self._normalizar(nombre.lower())
+        nombre_sin_puntos = nombre_norm.replace(".", "").replace(",", "")
 
-        except Exception as e:
-            log.warning(f"  [Names] Error Groq para '{nombre}': {e} → aprobando por defecto")
+        for sufijo in SUFIJOS_CORPORATIVOS:
+            if nombre_sin_puntos.endswith(sufijo):
+                return True
+
+        palabras = set(re.split(r'\s+', nombre_norm))
+        if palabras & KEYWORDS_CORPORATIVOS:
             return True
-        
-    def _validar_config(self):
-        if not os.getenv("GROQ_API_KEY"):
-            raise Exception("GROQ_API_KEY no está definido en .env")
+
+        return False
+
+    def _normalizar(self, texto: str) -> str:
+        nfkd = unicodedata.normalize('NFKD', texto)
+        return ''.join(c for c in nfkd if not unicodedata.combining(c))

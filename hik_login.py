@@ -163,7 +163,7 @@ class HikLogin:
 
         campo.clear()
         campo.send_keys(codigo)
-        log.info(f"  Código {codigo} ingresado")
+        log.info("  Código de verificación ingresado")
         time.sleep(0.5)
 
     def _click_sign_in(self):
