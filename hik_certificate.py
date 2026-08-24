@@ -81,6 +81,7 @@ def clasificar_filas(driver, idx_name, idx_company, idx_cert):
     filas    = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
     aprobar  = []
     manual   = []
+    pendientes_gemini = []
 
     for i, fila in enumerate(filas):
         try:
@@ -107,16 +108,26 @@ def clasificar_filas(driver, idx_name, idx_company, idx_cert):
                 "fila":          fila,
             }
 
-            es_persona = names.es_persona(nombre, empresa)
-
-            if es_persona:
-                aprobar.append(usuario)
+            if names.es_persona(nombre, empresa):
+                pendientes_gemini.append(usuario)
             else:
                 manual.append(usuario)
-                log.warning(f"  [Names] '{nombre}' no es persona — omitido para revisión manual")
+                log.warning(f"  [Names] '{nombre}' — omitido para revisión manual")
 
         except Exception as e:
             log.warning(f"  Error leyendo fila {i}: {e}")
+
+    if pendientes_gemini:
+        nombres_a_validar = [u["nombre"] for u in pendientes_gemini]
+        log.info(f"  Enviando {len(nombres_a_validar)} nombres a Gemini en lote...")
+        resultados = names.validar_lote(nombres_a_validar)
+
+        for u in pendientes_gemini:
+            if resultados.get(u["nombre"], False):
+                aprobar.append(u)
+            else:
+                manual.append(u)
+                log.warning(f"  [Names] '{u['nombre']}' — Gemini dice no persona, revisión manual")
 
     log.info(f"  Clasificados → APROBAR: {len(aprobar)} | MANUAL_REVIEW: {len(manual)}")
     return aprobar, manual
