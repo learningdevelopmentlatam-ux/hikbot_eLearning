@@ -140,7 +140,7 @@ def main():
         log.info(f"  Duración total: {duracion_total}s")
         log.info(f"{'='*60}")
 
-        input("\nBots terminados — revisa navegador y DB. Enter para cerrar...")
+        log.info("Bots terminados — cerrando navegador.")
 
     finally:
         driver.quit()

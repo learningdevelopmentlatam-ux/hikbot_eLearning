@@ -205,8 +205,6 @@ def click_approve(driver, marcados_ref, idx_cert):
                 log.info("  Popup confirmado")
                 time.sleep(1)
             except TimeoutException:
-                log.info(f"  Tabla vacía tras {transcurrido}s — Approve completado")
-                tabla_actualizada = True
                 break
 
         aprobados_ref = {(u["nombre"], u["certificacion"]) for u in marcados_ref}
@@ -267,6 +265,51 @@ def click_approve(driver, marcados_ref, idx_cert):
         log.error(f"  Error en Approve: {e}")
         return True
     
+# ── Resiliencia ───────────────────────────────────────────────────────────────
+
+def cerrar_modal_si_existe(driver):
+    cerrado = False
+    selectores = [
+        (".el-message-box__wrapper",
+         "//div[contains(@class,'el-message-box__wrapper')]"
+         "//button[normalize-space()='Confirm' or normalize-space()='OK']"),
+        (".el-dialog__wrapper .el-dialog__headerbtn", None),
+    ]
+    for css, btn_xpath in selectores:
+        try:
+            modal = driver.find_element(By.CSS_SELECTOR, css)
+            if modal.is_displayed():
+                btn = driver.find_element(By.XPATH, btn_xpath) if btn_xpath else modal
+                driver.execute_script("arguments[0].click();", btn)
+                time.sleep(1)
+                cerrado = True
+                log.info(f"  Modal cerrado: {css}")
+        except Exception:
+            pass
+    return cerrado
+
+
+def recuperar_pagina(driver):
+    log.info("  Recuperando página...")
+    try:
+        driver.refresh()
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
+        )
+        time.sleep(3)
+        log.info("  Página recuperada con refresh")
+    except Exception:
+        log.warning("  Refresh falló, navegando a URL directa...")
+        driver.get(URL_CERTIFICATE)
+        try:
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "table tbody tr"))
+            )
+        except TimeoutException:
+            log.error("  No se pudo recuperar la página")
+        time.sleep(3)
+
+
 # ── Ciclo principal ───────────────────────────────────────────────────────────
 
 def procesar(driver, ejec_id):
@@ -277,15 +320,51 @@ def procesar(driver, ejec_id):
 
     ya_registrados_manual = set()
 
+    MAX_INTENTOS_SIN_PROGRESO = 3
+    intentos_sin_progreso = 0
+    pendientes_antes = None
+
     while True:
-        time.sleep(5)
-        aprobar, manual = clasificar_filas(driver, idx_name, idx_company, idx_cert)
+        try:
+            time.sleep(5)
+            cerrar_modal_si_existe(driver)
 
-        if not aprobar:
-            log.info("  Sin pendientes para aprobar — fin del proceso")
-            break
+            aprobar, manual = clasificar_filas(driver, idx_name, idx_company, idx_cert)
 
-        if aprobar:
+            pendientes_ahora = len(aprobar)
+            if (pendientes_antes is not None
+                    and pendientes_ahora >= pendientes_antes
+                    and pendientes_ahora > 0):
+                intentos_sin_progreso += 1
+                log.warning(
+                    f"  Sin progreso ({intentos_sin_progreso}/{MAX_INTENTOS_SIN_PROGRESO})"
+                    f": {pendientes_ahora} pendientes")
+                if intentos_sin_progreso >= MAX_INTENTOS_SIN_PROGRESO:
+                    log.error(
+                        f"  {MAX_INTENTOS_SIN_PROGRESO} intentos sin progreso"
+                        " — registrando pendientes como error")
+                    for u in aprobar:
+                        db.registrar_usuario(ejec_id, {
+                            **u, "accion": "ERROR",
+                            "motivo_error": "Sin progreso tras reintentos",
+                        })
+                        total_errores += 1
+                    break
+            else:
+                intentos_sin_progreso = 0
+            pendientes_antes = pendientes_ahora
+
+            for u in manual:
+                clave = (u["nombre"], u["certificacion"])
+                if clave not in ya_registrados_manual:
+                    db.registrar_usuario(ejec_id, {**u, "accion": "MANUAL_REVIEW"})
+                    ya_registrados_manual.add(clave)
+                    total_manual += 1
+
+            if not aprobar:
+                log.info("  Sin pendientes para aprobar — fin del proceso")
+                break
+
             log.info(f"\n  --- APROBANDO {len(aprobar)} ---")
             for u in aprobar:
                 log.info(f"  → {u['nombre']} | {u['empresa']} | {u['certificacion']}")
@@ -301,19 +380,24 @@ def procesar(driver, ejec_id):
                         db.registrar_usuario(ejec_id, {
                             **u,
                             "accion": "ERROR",
-                            "motivo_error": "Falló Approve antes de confirmar"
+                            "motivo_error": "Falló Approve antes de confirmar",
                         })
                         total_errores += 1
-                if ok == "TIMEOUT":
-                    log.warning("  Deteniendo ejecución por timeout de página")
-                    break
 
-        for u in manual:
-            clave = (u["nombre"], u["certificacion"])
-            if clave not in ya_registrados_manual:
-                db.registrar_usuario(ejec_id, {**u, "accion": "MANUAL_REVIEW"})
-                ya_registrados_manual.add(clave)
-                total_manual += 1
+                if ok == "TIMEOUT":
+                    log.warning("  Timeout en Approve — intentando recuperar página")
+                    recuperar_pagina(driver)
+
+        except Exception as e:
+            log.error(f"  Error en iteración: {e}")
+            intentos_sin_progreso += 1
+            log.warning(
+                f"  Intentos sin progreso: {intentos_sin_progreso}/{MAX_INTENTOS_SIN_PROGRESO}")
+            if intentos_sin_progreso >= MAX_INTENTOS_SIN_PROGRESO:
+                log.error("  Máximo de reintentos alcanzado — saliendo")
+                break
+            cerrar_modal_si_existe(driver)
+            recuperar_pagina(driver)
 
     return total_aprobados, total_manual, total_errores
 
