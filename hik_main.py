@@ -143,6 +143,7 @@ def main():
         log.info("Bots terminados — cerrando navegador.")
 
     finally:
+        input("\nBot terminado — revisa navegador y DB. Enter para cerrar...")
         driver.quit()
         log.info("Driver cerrado. Fin.")
 

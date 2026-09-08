@@ -136,7 +136,9 @@ def encontrar_indices(driver):
     log.info(f"  Columnas → Language: {idx_lang} | Certification: {idx_cert}")
     return idx_lang, idx_cert
 
-def clasificar_filas(driver, idx_lang, idx_cert):
+def clasificar_filas(driver, idx_lang, idx_cert, ya_conocidos=None):
+    if ya_conocidos is None:
+        ya_conocidos = set()
     filas   = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
     aprobar  = []
     rechazar = []
@@ -158,6 +160,10 @@ def clasificar_filas(driver, idx_lang, idx_cert):
             if not nombre and not idioma:
                 continue
 
+            if (nombre, cert) in ya_conocidos:
+                log.info(f"  [SKIP] {nombre} | {cert}")
+                continue
+
             usuario = {
                 "nombre":        nombre,
                 "email":         email,
@@ -173,12 +179,13 @@ def clasificar_filas(driver, idx_lang, idx_cert):
             es_display     = "HCSA-Display" in cert
             es_maintenance = "HCSA-Maintenance" in cert or "HCSA Maintenance" in cert
             es_hcsp = cert.startswith("HCSP") or " HCSP" in cert or "HCSA-SaaS" in cert
-            es_security    = "HCSA-Security" in cert  # cubre Security, Security-Acceso y Alarma, etc.
-            es_vms         = "HCSA-VMS" in cert        # cubre HCSA-VMS, HCSA-VMS-HCL
+            es_security    = "HCSA-Security" in cert
+            es_vms         = "HCSA-VMS" in cert
+            es_networking  = "HCSA-Networking" in cert
+            es_access_ctrl = "HCSA-Access Control" in cert
             es_cctv_group  = any(x in cert for x in [
                 "HCSA-CCTV",
                 "HCSA-Video Intercom",
-                "HCSA-Access Control",
                 "HCSA-Alarm",
             ])
 
@@ -197,11 +204,20 @@ def clasificar_filas(driver, idx_lang, idx_cert):
                 else:
                     rechazar.append({**usuario, "mensaje_reject": MENSAJE_SECURITY})
 
+            elif es_networking:
+                rechazar.append({**usuario, "mensaje_reject": MENSAJE_VIRTUAL})
+
             elif es_vms:
-                if pais in PAISES_VMS:
+                if "English" in idioma and pais in PAISES_VMS:
                     aprobar.append(usuario)
                 else:
                     rechazar.append({**usuario, "mensaje_reject": MENSAJE_VMS})
+
+            elif es_access_ctrl:
+                if "English" in idioma:
+                    aprobar.append(usuario)
+                else:
+                    rechazar.append({**usuario, "mensaje_reject": MENSAJE_VIRTUAL})
 
             elif es_cctv_group:
                 if "English" in idioma and pais in PAISES_CARIBE:
@@ -456,7 +472,12 @@ def procesar(driver, ejec_id):
     total_rechazados = 0
     total_errores    = 0
     total_manual     = 0
-    ya_registrados_manual = set()
+
+    historico = db.get_usuarios(accion="MANUAL_REVIEW", limit=9999)
+    ya_registrados_manual = {(u["nombre"], u["certificacion"]) for u in historico}
+    log.info(f"  MANUAL_REVIEW previos en DB: {len(ya_registrados_manual)}")
+
+    ya_procesados = set()
 
     MAX_INTENTOS_SIN_PROGRESO = 3
     intentos_sin_progreso = 0
@@ -467,7 +488,10 @@ def procesar(driver, ejec_id):
             time.sleep(2)
             cerrar_modal_si_existe(driver)
 
-            aprobar, rechazar, manual = clasificar_filas(driver, idx_lang, idx_cert)
+            aprobar, rechazar, manual = clasificar_filas(
+                driver, idx_lang, idx_cert,
+                ya_conocidos=ya_registrados_manual | ya_procesados
+            )
 
             pendientes_ahora = len(aprobar) + len(rechazar)
             if (pendientes_antes is not None
@@ -486,6 +510,7 @@ def procesar(driver, ejec_id):
                             **u, "accion": "ERROR",
                             "motivo_error": "Sin progreso tras reintentos",
                         })
+                        ya_procesados.add((u["nombre"], u["certificacion"]))
                         total_errores += 1
                     break
             else:
@@ -517,6 +542,7 @@ def procesar(driver, ejec_id):
                     if ok:
                         for u in marcados:
                             db.registrar_usuario(ejec_id, {**u, "accion": "APPROVED"})
+                            ya_procesados.add((u["nombre"], u["certificacion"]))
                             total_aprobados += 1
                     else:
                         for u in marcados:
@@ -525,6 +551,7 @@ def procesar(driver, ejec_id):
                                 "accion": "ERROR",
                                 "motivo_error": "Falló Approve",
                             })
+                            ya_procesados.add((u["nombre"], u["certificacion"]))
                             total_errores += 1
                 continue
 
@@ -552,6 +579,7 @@ def procesar(driver, ejec_id):
                         if ok:
                             for u in marcados:
                                 db.registrar_usuario(ejec_id, {**u, "accion": "REJECTED"})
+                                ya_procesados.add((u["nombre"], u["certificacion"]))
                                 total_rechazados += 1
                         else:
                             for u in marcados:
@@ -559,6 +587,7 @@ def procesar(driver, ejec_id):
                                     **u, "accion": "ERROR",
                                     "motivo_error": "Falló Reject x2",
                                 })
+                                ya_procesados.add((u["nombre"], u["certificacion"]))
                                 total_errores += 1
 
         except Exception as e:

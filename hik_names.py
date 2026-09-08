@@ -21,8 +21,12 @@ Requiere en .env:
 import json
 import os
 import re
+import ssl
+import time
 import logging
 import unicodedata
+import httpx
+import truststore
 from google import genai
 from dotenv import load_dotenv
 
@@ -82,7 +86,12 @@ class HikNames:
             log.warning("  [Names] GEMINI_API_KEY no definida — solo se usarán filtros locales")
             self.client = None
         else:
-            self.client = genai.Client(api_key=api_key)
+            ssl_ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            hx = httpx.Client(verify=ssl_ctx, timeout=60)
+            self.client = genai.Client(
+                api_key=api_key,
+                http_options={"httpx_client": hx},
+            )
 
     def es_persona(self, nombre: str, empresa: str) -> bool:
         nombre  = nombre.strip()
@@ -136,33 +145,41 @@ class HikNames:
             "- No extra text, no markdown, no code fences, ONLY the JSON array"
         )
 
-        try:
-            response = self.client.models.generate_content(
-                model="gemini-3.6-flash",
-                contents=prompt,
-            )
-            texto = response.text.strip()
-            if texto.startswith("```"):
-                texto = texto.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        MAX_REINTENTOS = 3
+        for intento in range(1, MAX_REINTENTOS + 1):
+            try:
+                log.info(f"  [Names] Gemini intento {intento}/{MAX_REINTENTOS}...")
+                response = self.client.models.generate_content(
+                    model="gemini-3.6-flash",
+                    contents=prompt,
+                )
 
-            resultados_lista = json.loads(texto)
-            resultados = {}
-            for item in resultados_lista:
-                nombre = item.get("name", "")
-                es_persona = item.get("is_person", False)
-                resultados[nombre] = es_persona
-                log.info(f"  [Names] Gemini: '{nombre}' → {'persona ✓' if es_persona else 'no persona ✗'}")
+                texto = response.text.strip()
+                if texto.startswith("```"):
+                    texto = texto.split("\n", 1)[1].rsplit("```", 1)[0].strip()
 
-            for n in nombres:
-                if n not in resultados:
-                    log.warning(f"  [Names] Gemini no respondió para '{n}' — manual review")
-                    resultados[n] = False
+                resultados_lista = json.loads(texto)
+                resultados = {}
+                for item in resultados_lista:
+                    nombre = item.get("name", "")
+                    es_persona = item.get("is_person", False)
+                    resultados[nombre] = es_persona
+                    log.info(f"  [Names] Gemini: '{nombre}' → {'persona ✓' if es_persona else 'no persona ✗'}")
 
-            return resultados
+                for n in nombres:
+                    if n not in resultados:
+                        log.warning(f"  [Names] Gemini no respondió para '{n}' — manual review")
+                        resultados[n] = False
 
-        except Exception as e:
-            log.warning(f"  [Names] Error Gemini en lote: {type(e).__name__} — todos a manual review")
-            return {n: False for n in nombres}
+                return resultados
+
+            except Exception as e:
+                log.warning(f"  [Names] Error Gemini (intento {intento}): {type(e).__name__}")
+                if intento < MAX_REINTENTOS:
+                    time.sleep(3)
+
+        log.warning(f"  [Names] Gemini falló {MAX_REINTENTOS} veces — {len(nombres)} a manual review")
+        return {n: False for n in nombres}
 
     def _es_nombre_corporativo(self, nombre: str) -> bool:
         nombre_norm = self._normalizar(nombre.lower())
