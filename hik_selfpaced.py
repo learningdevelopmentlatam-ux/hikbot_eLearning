@@ -334,16 +334,18 @@ def click_approve(driver):
 
 def click_reject(driver, mensaje):
     try:
-        time.sleep(2) 
-        # Esperar que no haya popups abiertos
+        time.sleep(3)
+        cerrar_modal_si_existe(driver)
+        time.sleep(2)
         try:
-            WebDriverWait(driver, 3).until(
+            WebDriverWait(driver, 8).until(
                 EC.invisibility_of_element_located(
                     (By.CSS_SELECTOR, ".el-dialog__wrapper")
                 )
             )
         except TimeoutException:
-            pass
+            cerrar_modal_si_existe(driver)
+            time.sleep(2)
 
         # Click en botón Reject usando JavaScript para evitar intercepción
         btn = WebDriverWait(driver, 10).until(
