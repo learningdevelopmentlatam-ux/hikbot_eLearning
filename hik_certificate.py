@@ -186,7 +186,7 @@ def click_approve(driver, marcados_ref, idx_cert):
         btn = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='Approve']"))
         )
-        btn.click()
+        driver.execute_script("arguments[0].click();", btn)
         log.info("  Click Approve")
         time.sleep(2)
 
@@ -263,7 +263,7 @@ def click_approve(driver, marcados_ref, idx_cert):
 
     except Exception as e:
         log.error(f"  Error en Approve: {e}")
-        return True
+        return False
     
 # ── Resiliencia ───────────────────────────────────────────────────────────────
 

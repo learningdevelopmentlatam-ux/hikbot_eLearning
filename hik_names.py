@@ -119,6 +119,10 @@ class HikNames:
             log.warning(f"  [Names] '{nombre}' contiene puntos o comas — manual review")
             return False
 
+        if not all(c.isalpha() or c in (' ', '-', "'") for c in nombre):
+            log.warning(f"  [Names] '{nombre}' contiene caracteres no alfabéticos — manual review")
+            return False
+
         if self._es_nombre_corporativo(nombre):
             log.warning(f"  [Names] '{nombre}' contiene keywords corporativos — manual review")
             return False
