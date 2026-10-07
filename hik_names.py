@@ -154,7 +154,7 @@ class HikNames:
             try:
                 log.info(f"  [Names] Gemini intento {intento}/{MAX_REINTENTOS}...")
                 response = self.client.models.generate_content(
-                    model="gemini-3.6-flash",
+                    model="gemini-3.7-flash",
                     contents=prompt,
                 )
 
